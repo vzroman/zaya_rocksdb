@@ -1,0 +1,16 @@
+{application, zaya_rocksdb,
+ [{description, "RocksDB driver for zaya"},
+  {vsn, git},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+  {included_applications,[
+    sext
+  ]},
+  {licenses, ["MIT"]},
+  {links, []}
+ ]}.
