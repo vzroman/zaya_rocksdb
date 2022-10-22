@@ -12,6 +12,7 @@
     %create_missing_column_families => todo,
     %error_if_exists => false,
     paranoid_checks => false,
+    % compression => todo,
     % max_open_files => todo,
     % max_total_wal_size => todo,
     % use_fsync => todo,
