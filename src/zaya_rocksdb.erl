@@ -11,7 +11,7 @@
     create_if_missing => false,
     %create_missing_column_families => todo,
     %error_if_exists => false,
-    paranoid_checks => false,
+    paranoid_checks => false
     % compression => todo,
     % max_open_files => todo,
     % max_total_wal_size => todo,
@@ -45,7 +45,7 @@
     % bytes_per_sync => todo,
     % skip_stats_update_on_db_open => todo,
     % wal_recovery_mode => todo,
-    allow_concurrent_memtable_write => true
+    % allow_concurrent_memtable_write => true
     % enable_write_thread_adaptive_yield => todo,
     % db_write_buffer_size => todo,
     % in_memory => todo,
