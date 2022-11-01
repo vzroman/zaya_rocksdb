@@ -11,7 +11,7 @@
     create_if_missing => false,
     %create_missing_column_families => todo,
     %error_if_exists => false,
-    paranoid_checks => false
+    paranoid_checks => false,
     % compression => todo,
     % max_open_files => todo,
     % max_total_wal_size => todo,
@@ -20,7 +20,7 @@
     % db_log_dir => todo,
     % wal_dir => todo,
     % delete_obsolete_files_period_micros => todo,
-    % max_background_jobs => todo,
+    max_background_jobs => 32,
     % max_background_compactions => todo,
     % max_background_flushes => todo,
     % max_log_file_size => todo,
@@ -39,7 +39,7 @@
     % stats_dump_period_sec => todo,
     % advise_random_on_open => todo,
     % access_hint => todo,
-    % compaction_readahead_size => todo,
+    compaction_readahead_size => 2 * 1024 * 1024
     % new_table_reader_for_compaction_inputs => todo,
     % use_adaptive_mutex => todo,
     % bytes_per_sync => todo,
@@ -47,7 +47,7 @@
     % wal_recovery_mode => todo,
     % allow_concurrent_memtable_write => true
     % enable_write_thread_adaptive_yield => todo,
-    % db_write_buffer_size => todo,
+    % db_write_buffer_size => 512 * 1024 * 1024,
     % in_memory => todo,
     % rate_limiter => todo,
     % sst_file_manager => todo,
@@ -63,8 +63,8 @@
   },
   read => #{
     % read_tier => todo,
-    verify_checksums => false
-    %fill_cache => todo,
+    verify_checksums => false,
+    fill_cache => true
     % iterate_upper_bound => todo,
     % iterate_lower_bound => todo,
     % tailing => todo,
