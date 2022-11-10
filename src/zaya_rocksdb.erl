@@ -7,7 +7,7 @@
 -define(DEFAULT_ROCKSDB_OPTIONS,#{
   %compression_algorithm => todo,
   open_options=>#{
-    total_threads => 64,
+    % total_threads => 64,
     create_if_missing => false,
     %create_missing_column_families => todo,
     %error_if_exists => false,
@@ -20,7 +20,7 @@
     % db_log_dir => todo,
     % wal_dir => todo,
     % delete_obsolete_files_period_micros => todo,
-    max_background_jobs => 32,
+    % max_background_jobs => 32,
     % max_background_compactions => todo,
     % max_background_flushes => todo,
     % max_log_file_size => todo,
