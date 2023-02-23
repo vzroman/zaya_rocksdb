@@ -94,6 +94,7 @@
 ).
 
 -define(LOCK(P),P++"/LOCK").
+-define(RETRY_TIMEOUT, 1000).
 
 -define(DECODE_KEY(K), sext:decode(K) ).
 -define(ENCODE_KEY(K), sext:encode(K) ).
@@ -225,6 +226,7 @@ try_open(Dir, #{
           case file:delete(?LOCK(Dir)) of
             ok->
               ?LOGINFO("~s lock removed, trying open",[ Dir ]),
+              timer:sleep( ?RETRY_TIMEOUT ),
               % Dont decrement the attempt because we fixed the error ourselves
               try_open(Dir,Options);
             {error,UnlockError}->
@@ -238,10 +240,12 @@ try_open(Dir, #{
             _:E:S->
               ?LOGWARNING("~s repair attempt failed error ~p stack ~p, left attemps ~p",[Dir,E,S,Attempts-1])
           end,
+          timer:sleep( ?RETRY_TIMEOUT ),
           try_open(Dir,Options#{ open_attempts => Attempts -1 })
       end;
     {error, Other} ->
       ?LOGERROR("~s open error ~p, left attemps ~p",[Dir,Other,Attempts-1]),
+      timer:sleep( ?RETRY_TIMEOUT ),
       try_open( Dir, Options#{ open_attempts => Attempts -1 } )
   end;
 try_open(Dir, #{rocksdb := Params})->
