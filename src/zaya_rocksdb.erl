@@ -332,8 +332,8 @@ first( #ref{ref = Ref, read = Params} )->
     case rocksdb:iterator_move(Itr, first) of
       {ok, K, V}->
         { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-      {error, Error}->
-        throw(Error)
+      {error, _Error}->
+        undefined
     end
   after
     catch rocksdb:iterator_close(Itr)
@@ -345,8 +345,8 @@ last( #ref{ref = Ref, read = Params} )->
     case rocksdb:iterator_move(Itr, last) of
       {ok, K, V}->
         { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-      {error, Error}->
-        throw(Error)
+      {error, _Error}->
+        undefined
     end
   after
     catch rocksdb:iterator_close(Itr)
@@ -361,13 +361,13 @@ next( #ref{ref = Ref, read = Params}, K0 )->
         case rocksdb:iterator_move( Itr, next ) of
           {ok,K,V}->
             { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-          {error,Error}->
-            throw( Error )
+          {error,_Error}->
+            undefined
         end;
       {ok,K,V}->
         { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-      {error, Error}->
-        throw(Error)
+      {error, _Error}->
+        undefined
     end
   after
     catch rocksdb:iterator_close(Itr)
@@ -382,15 +382,15 @@ prev( #ref{ref = Ref, read = Params}, K0 )->
         case rocksdb:iterator_move( Itr, prev ) of
           {ok,K,V}->
             { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-          {error,Error}->
-            throw( Error )
+          {error,_Error}->
+            undefined
         end;
       {error, _}->
         case rocksdb:iterator_move(Itr, last) of
           {ok,K,V}->
             { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-          {error,Error}->
-            throw( Error )
+          {error,_Error}->
+            undefined
         end
     end
   after
