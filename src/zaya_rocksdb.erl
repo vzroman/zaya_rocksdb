@@ -185,6 +185,16 @@
 ]).
 
 %%=================================================================
+%%	TRANSACTION API
+%%=================================================================
+-export([
+  transaction/1,
+  t_write/3,
+  commit/2,
+  rollback/2
+]).
+
+%%=================================================================
 %%	INFO API
 %%=================================================================
 -export([
@@ -621,6 +631,35 @@ dump_batch(#ref{ref = Ref, write = Params}, KVs)->
   case rocksdb:write(Ref,[{put,K,V} || {K,V} <- KVs ], Params) of
     ok->ok;
     {error,Error}->throw(Error)
+  end.
+
+%%=================================================================
+%%	TRANSACTION API
+%%=================================================================
+transaction( _Ref )->
+  case rocksdb:batch() of
+    {ok, TransactionRef} -> TransactionRef;
+    {error, Error} -> throw( Error )
+  end.
+
+t_write( _Ref, TransactionRef, KVs )->
+  [ ok = rocksdb:batch_put(TransactionRef, ?ENCODE_KEY(K), ?ENCODE_VALUE(V)) || { K, V } <- KVs ],
+  ok.
+
+commit(#ref{ref = Ref, write = Params}, TransactionRef )->
+  try
+    case rocksdb:write_batch( Ref, TransactionRef, Params ) of
+      ok -> ok;
+      {error, Error} -> throw( Error )
+    end
+  after
+    rocksdb:release_batch( TransactionRef )
+  end.
+
+rollback( _Ref, TransactionRef )->
+  try rocksdb:batch_clear ( TransactionRef )
+  after
+    rocksdb:release_batch( TransactionRef )
   end.
 
 %%=================================================================
