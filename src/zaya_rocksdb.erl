@@ -192,6 +192,7 @@
 -export([
   transaction/1,
   t_write/3,
+  t_delete/3,
   commit/2,
   commit1/2,
   commit2/2,
@@ -683,6 +684,10 @@ transaction( _Ref )->
 
 t_write( _Ref, TransactionRef, KVs )->
   [ ok = rocksdb:batch_put(TransactionRef, ?ENCODE_KEY(K), ?ENCODE_VALUE(V)) || { K, V } <- KVs ],
+  ok.
+
+t_delete( _Ref, TransactionRef, Ks )->
+  [ ok = rocksdb:batch_delete(TransactionRef, ?ENCODE_KEY(K)) ||  K <- Ks ],
   ok.
 
 commit(#ref{ref = Ref, write = Params}, TransactionRef )->
