@@ -703,7 +703,12 @@ commit(#ref{ref = Ref, write = Params}, TransactionRef )->
 commit1( #ref{ log = Log ,write = Params} = Ref, TRef )->
   Rollback = prepare_rollback( rocksdb:batch_tolist( TRef ), Ref ),
   ok = rocksdb:write( Log, [ {put,?ROLLBACK_KEY(TRef),?ENCODE_VALUE(Rollback)}], Params),
-  commit( Ref, TRef ).
+  try commit( Ref, TRef )
+  catch
+    _:E->
+      rollback( Ref, TRef ),
+      throw( E )
+  end
 
 commit2( #ref{log = Log, write = Params} , TRef)->
   rocksdb:write(Log, [{delete,?ROLLBACK_KEY(TRef)}], Params),
