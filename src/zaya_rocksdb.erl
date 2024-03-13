@@ -722,14 +722,14 @@ rollback(#ref{ref =Ref, log = Log ,write = Params}, TRef )->
     rocksdb:release_batch( TRef )
   end.
 
-prepare_rollback([{put, K, _V} | Rest ], #ref{ ref = DRef ,write = Params} = Ref)->
+prepare_rollback([{put, K, _V} | Rest ], #ref{ ref = DRef ,read = Params} = Ref)->
   case rocksdb:get(DRef, K, Params) of
     {ok, V} ->
       [{put, K, V} | prepare_rollback(Rest, Ref) ];
     _->
       [{delete, K} | prepare_rollback(Rest, Ref) ]
   end;
-prepare_rollback([{delete, K} | Rest ], #ref{ ref = DRef ,write = Params} = Ref)->
+prepare_rollback([{delete, K} | Rest ], #ref{ ref = DRef ,read = Params} = Ref)->
   case rocksdb:get(DRef, K, Params) of
     {ok, V} ->
       [{put, K, V} | prepare_rollback(Rest, Ref) ];
