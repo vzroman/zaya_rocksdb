@@ -114,8 +114,6 @@
 -define(DECODE_VALUE(V), binary_to_term(V) ).
 -define(ENCODE_VALUE(V), term_to_binary(V) ).
 
--define(ROLLBACK_KEY( Ref ),?ENCODE_KEY({rollback, ?MODULE, TRef})).
-
 -ifndef(TEST).
 
 -define(LOGERROR(Text),lager:error(Text)).
@@ -190,11 +188,7 @@
 %%	TRANSACTION API
 %%=================================================================
 -export([
-  transaction/1,
-  t_write/3,
-  t_delete/3,
-  commit/2,
-  commit1/2,
+  commit1/3,
   commit2/2,
   rollback/2
 ]).
@@ -676,78 +670,72 @@ dump_batch(#ref{ref = Ref, write = Params}, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
-transaction( _Ref )->
-  case rocksdb:batch() of
-    {ok, TransactionRef} -> TransactionRef;
-    {error, Error} -> throw( Error )
+commit1( #ref{ ref = DRef,log = Log ,write = Params} = Ref, Write, Delete )->
+  Commit = prepare_commit( Write, Delete ),
+  Rollback = prepare_rollback( Commit , Ref ),
+  if
+    length( Rollback ) =:=0-> ignore;
+    true ->
+      TRef = ?ENCODE_KEY( make_ref() ),
+      try
+        ok = rocksdb:write( Log, [ {put,TRef, ?ENCODE_VALUE(Rollback) }], Params),
+        ok = rocksdb:write( DRef, Commit, Params),
+        TRef
+      catch
+        _:E->
+          rollback( Ref, TRef ),
+          throw( E )
+      end
   end.
 
-t_write( _Ref, TransactionRef, KVs )->
-  [ ok = rocksdb:batch_put(TransactionRef, ?ENCODE_KEY(K), ?ENCODE_VALUE(V)) || { K, V } <- KVs ],
-  ok.
-
-t_delete( _Ref, TransactionRef, Ks )->
-  [ ok = rocksdb:batch_delete(TransactionRef, ?ENCODE_KEY(K)) ||  K <- Ks ],
-  ok.
-
-commit(#ref{ref = Ref, write = Params}, TransactionRef )->
-  try
-    case rocksdb:write_batch( Ref, TransactionRef, Params ) of
-      ok -> ok;
-      {error, Error} -> throw( Error )
-    end
-  after
-    rocksdb:release_batch( TransactionRef )
+commit2( #ref{log = Log, write = Params} , TRef )->
+  if
+    TRef =/= ignore ->
+      ok = rocksdb:write(Log, [{delete,TRef}], Params);
+    true ->
+      ok
   end.
-
-commit1( #ref{ log = Log ,write = Params} = Ref, TRef )->
-  Rollback = prepare_rollback( rocksdb:batch_tolist( TRef ), Ref ),
-  ok = rocksdb:write( Log, [ {put,?ROLLBACK_KEY(TRef),?ENCODE_VALUE(Rollback)}], Params),
-  try commit( Ref, TRef )
-  catch
-    _:E->
-      rollback( Ref, TRef ),
-      throw( E )
-  end
-
-commit2( #ref{log = Log, write = Params} , TRef)->
-  rocksdb:write(Log, [{delete,?ROLLBACK_KEY(TRef)}], Params),
-  ok.
 
 rollback(#ref{ref =Ref, log = Log ,write = Params}, TRef )->
-  try
-    case rocksdb:get(Log, ?ROLLBACK_KEY(TRef), Params) of
-      {ok, Rollback} ->
-        rocksdb:write( Ref, ?DECODE_VALUE( Rollback ), Params ),
-        rocksdb:write(Log, [{delete,?ROLLBACK_KEY(TRef)}], Params);
-      _->
-        rocksdb:batch_clear ( TRef )
-    end
-  after
-    rocksdb:release_batch( TRef )
+  case rocksdb:get(Log, TRef, Params) of
+    {ok, Rollback} ->
+      ok = rocksdb:write( Ref, ?DECODE_VALUE( Rollback ), Params ),
+      ok = rocksdb:write( Log, [{delete,TRef}], Params);
+    _->
+      ok
   end.
 
-prepare_rollback([{put, K, _V} | Rest ], #ref{ ref = DRef ,read = Params} = Ref)->
+prepare_commit([{K,V}|Rest], Delete )->
+  [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} | prepare_commit(Rest, Delete) ];
+prepare_commit([], [K|Rest] )->
+  [{delete,?ENCODE_KEY(K)} | prepare_commit([], Rest) ];
+prepare_commit([], [])->
+  [].
+
+prepare_rollback([{put,K,V}|Rest], #ref{ ref = DRef ,read = Params} = Ref)->
   case rocksdb:get(DRef, K, Params) of
     {ok, V} ->
-      [{put, K, V} | prepare_rollback(Rest, Ref) ];
+      prepare_rollback(Rest, Ref);
+    {ok, V0} ->
+      [{put, K, V0} | prepare_rollback(Rest, Ref) ];
     _->
       [{delete, K} | prepare_rollback(Rest, Ref) ]
   end;
-prepare_rollback([{delete, K} | Rest ], #ref{ ref = DRef ,read = Params} = Ref)->
+
+prepare_rollback([{delete, K}|Rest], #ref{ ref = DRef ,read = Params} = Ref)->
   case rocksdb:get(DRef, K, Params) of
     {ok, V} ->
       [{put, K, V} | prepare_rollback(Rest, Ref) ];
     _->
-      [{delete, K} | prepare_rollback(Rest, Ref) ]
+      prepare_rollback(Rest, Ref)
   end;
 prepare_rollback([], _Ref)->
   [].
 
 rollback_log( #ref{ ref = Ref, log = Log, read = ReadParams, write = WriteParams } )->
-  rocksdb:fold(Log, fun({K, Rollback}, _Acc)->
+  rocksdb:fold(Log, fun({TRef, Rollback}, _Acc)->
     rocksdb:write( Ref, ?DECODE_VALUE( Rollback ), WriteParams ),
-    rocksdb:write(Log, [{delete,K}], WriteParams)
+    rocksdb:write(Log, [{delete,TRef}], WriteParams)
   end, ok, ReadParams).
 
 %%=================================================================
