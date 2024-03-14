@@ -188,6 +188,7 @@
 %%	TRANSACTION API
 %%=================================================================
 -export([
+  commit/3,
   commit1/3,
   commit2/2,
   rollback/2
@@ -670,6 +671,10 @@ dump_batch(#ref{ref = Ref, write = Params}, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
+commit( #ref{ ref = DRef,write = Params}, Write, Delete )->
+  Commit = prepare_commit( Write, Delete ),
+  ok = rocksdb:write( DRef, Commit, Params).
+
 commit1( #ref{ ref = DRef,log = Log ,write = Params} = Ref, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
   Rollback = prepare_rollback( Commit , Ref ),
