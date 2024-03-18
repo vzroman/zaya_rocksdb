@@ -185,59 +185,99 @@
 ]).
 
 %%=================================================================
+%%	TRANSACTION API
+%%=================================================================
+-export([
+  commit/3,
+  commit1/3,
+  commit2/2,
+  rollback/2
+]).
+
+%%=================================================================
 %%	INFO API
 %%=================================================================
 -export([
   get_size/1
 ]).
 
--record(ref,{ref,read,write,dir}).
+-record(ref,{ref,log,read,write,dir}).
 
 %%=================================================================
 %%	SERVICE
 %%=================================================================
 create( Params )->
   Options = #{
-    dir := Dir
+    dir := Dir,
+    rocksdb := #{
+      read := Read,
+      write := Write
+    }
   } = ?OPTIONS( maps_merge(Params, #{rocksdb => #{open_options => #{ create_if_missing => true }}}) ),
 
-  ensure_dir( Dir ),
+  DataDir = Dir ++"/DATA",
+  LogDir = Dir++"/LOG",
 
-  try_open(Dir, Options).
+  ensure_dir( DataDir ),
+  ensure_dir( LogDir ),
+
+  #ref{
+    ref = try_open(DataDir, Options),
+    log = try_open(LogDir, Options),
+    read = maps:to_list(Read),
+    write = maps:to_list(Write),
+    dir = Dir
+  }.
 
 open( Params )->
   Options = #{
-    dir := Dir
+    dir := Dir,
+    rocksdb := #{
+      read := Read,
+      write := Write
+    }
   } = ?OPTIONS( Params ),
 
-  case filelib:is_dir( Dir ) of
+  DataDir = Dir ++"/DATA",
+  LogDir = Dir++"/LOG",
+
+  case filelib:is_dir( DataDir ) of
     true->
+      case filelib:is_dir( LogDir ) of
+        true -> ok;
+        false ->
+          ?LOGERROR("~s doesn't exist",[ LogDir ]),
+          throw(not_exists)
+      end,
       ok;
     false->
-      ?LOGERROR("~s doesn't exist",[ Dir ]),
+      ?LOGERROR("~s doesn't exist",[ DataDir ]),
       throw(not_exists)
   end,
 
-  try_open(Dir, Options).
+  Ref = #ref{
+    ref = try_open(DataDir, Options),
+    log = try_open(LogDir, Options),
+    read = maps:to_list(Read),
+    write = maps:to_list(Write),
+    dir = Dir
+  },
+
+  rollback_log( Ref ),
+
+  Ref.
+
 
 try_open(Dir, #{
   rocksdb := #{
-    open_options := Params,
-    read := Read,
-    write := Write
+    open_options := Params
   },
   open_attempts := Attempts
 } = Options) when Attempts > 0->
 
   ?LOGINFO("~s try open with params ~p",[Dir, Params]),
   case rocksdb:open(Dir, maps:to_list(Params)) of
-    {ok, Ref} ->
-      #ref{
-        ref = Ref,
-        read = maps:to_list(Read),
-        write = maps:to_list(Write),
-        dir = Dir
-      };
+    {ok, Ref} -> Ref;
     %% Check for open errors
     {error, {db_open, Error}} ->
       % Check for hanging lock
@@ -273,10 +313,15 @@ try_open(Dir, #{rocksdb := Params})->
   ?LOGERROR("~s OPEN ERROR: params ~p",[Dir, Params]),
   throw(open_error).
 
-close( #ref{ref = Ref} )->
+close( #ref{ref = Ref, log = Log} )->
   case rocksdb:close( Ref ) of
-    ok -> ok;
-    {error,Error}-> throw( Error)
+    ok ->
+      case rocksdb:close( Log ) of
+        ok -> ok;
+        {error, Error} -> throw( Error)
+      end;
+    {error,Error}->
+      throw( Error)
   end.
 
 remove( Params )->
@@ -622,6 +667,81 @@ dump_batch(#ref{ref = Ref, write = Params}, KVs)->
     ok->ok;
     {error,Error}->throw(Error)
   end.
+
+%%=================================================================
+%%	TRANSACTION API
+%%=================================================================
+commit( #ref{ ref = DRef,write = Params}, Write, Delete )->
+  Commit = prepare_commit( Write, Delete ),
+  ok = rocksdb:write( DRef, Commit, Params).
+
+commit1( #ref{ ref = DRef,log = Log ,write = Params} = Ref, Write, Delete )->
+  Commit = prepare_commit( Write, Delete ),
+  Rollback = prepare_rollback( Commit , Ref ),
+  if
+    length( Rollback ) =:=0-> ignore;
+    true ->
+      TRef = ?ENCODE_KEY( make_ref() ),
+      try
+        ok = rocksdb:write( Log, [ {put,TRef, ?ENCODE_VALUE(Rollback) }], Params),
+        ok = rocksdb:write( DRef, Commit, Params),
+        TRef
+      catch
+        _:E->
+          rollback( Ref, TRef ),
+          throw( E )
+      end
+  end.
+
+commit2( #ref{log = Log, write = Params} , TRef )->
+  if
+    TRef =/= ignore ->
+      ok = rocksdb:write(Log, [{delete,TRef}], Params);
+    true ->
+      ok
+  end.
+
+rollback(#ref{ref =Ref, log = Log ,write = Params}, TRef )->
+  case rocksdb:get(Log, TRef, Params) of
+    {ok, Rollback} ->
+      ok = rocksdb:write( Ref, ?DECODE_VALUE( Rollback ), Params ),
+      ok = rocksdb:write( Log, [{delete,TRef}], Params);
+    _->
+      ok
+  end.
+
+prepare_commit([{K,V}|Rest], Delete )->
+  [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} | prepare_commit(Rest, Delete) ];
+prepare_commit([], [K|Rest] )->
+  [{delete,?ENCODE_KEY(K)} | prepare_commit([], Rest) ];
+prepare_commit([], [])->
+  [].
+
+prepare_rollback([{put,K,V}|Rest], #ref{ ref = DRef ,read = Params} = Ref)->
+  case rocksdb:get(DRef, K, Params) of
+    {ok, V} ->
+      prepare_rollback(Rest, Ref);
+    {ok, V0} ->
+      [{put, K, V0} | prepare_rollback(Rest, Ref) ];
+    _->
+      [{delete, K} | prepare_rollback(Rest, Ref) ]
+  end;
+
+prepare_rollback([{delete, K}|Rest], #ref{ ref = DRef ,read = Params} = Ref)->
+  case rocksdb:get(DRef, K, Params) of
+    {ok, V} ->
+      [{put, K, V} | prepare_rollback(Rest, Ref) ];
+    _->
+      prepare_rollback(Rest, Ref)
+  end;
+prepare_rollback([], _Ref)->
+  [].
+
+rollback_log( #ref{ ref = Ref, log = Log, read = ReadParams, write = WriteParams } )->
+  rocksdb:fold(Log, fun({TRef, Rollback}, _Acc)->
+    rocksdb:write( Ref, ?DECODE_VALUE( Rollback ), WriteParams ),
+    rocksdb:write(Log, [{delete,TRef}], WriteParams)
+  end, ok, ReadParams).
 
 %%=================================================================
 %%	INFO
