@@ -646,20 +646,23 @@ do_foldr(_, _Itr, _Fun, Acc )->
 %%=================================================================
 %%	COPY
 %%=================================================================
+-define(ITR_RESET_COUNT, 10000).
 copy(#ref{ref = Ref, read = Params}, Fun, InAcc)->
   {ok, Itr} = rocksdb:iterator(Ref, [{first_key, first}|Params]),
   try
-    do_copy( rocksdb:iterator_move(Itr, first), Itr, Fun, InAcc )
+    do_copy( rocksdb:iterator_move(Itr, first), Itr, Fun, InAcc, ?ITR_RESET_COUNT )
   catch
     {stop,Acc}->Acc
   after
     catch rocksdb:iterator_close(Itr)
   end.
-
-do_copy( {ok,K,V}, Itr, Fun, InAcc )->
+do_copy( Next, Itr, Fun, InAcc, Reset ) when Reset =:= 0->
+  rocksdb:iterator_refresh(Itr),
+  do_copy( Next, Itr, Fun, InAcc, ?ITR_RESET_COUNT );
+do_copy( {ok,K,V}, Itr, Fun, InAcc, Reset )->
   Acc = Fun( {K, V}, InAcc ),
-  do_copy( rocksdb:iterator_move(Itr,next), Itr, Fun, Acc  );
-do_copy(_, _Itr, _Fun, Acc )->
+  do_copy( rocksdb:iterator_move(Itr,next), Itr, Fun, Acc, Reset -1 );
+do_copy(_, _Itr, _Fun, Acc, _Reset )->
   Acc.
 
 dump_batch(#ref{ref = Ref, write = Params}, KVs)->
