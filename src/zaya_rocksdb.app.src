@@ -6,7 +6,8 @@
    [kernel,
     stdlib,
     sext,
-    rocksdb
+    rocksdb,
+    zaya_pool
    ]},
   {env,[]},
   {modules, []},

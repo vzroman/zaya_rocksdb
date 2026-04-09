@@ -173,13 +173,20 @@
 ]).
 
 %%=================================================================
+%%	POOL API
+%%=================================================================
+-export([
+  pool_batch/2
+]).
+
+%%=================================================================
 %%	INFO API
 %%=================================================================
 -export([
   get_size/1
 ]).
 
--record(ref,{ref,log,read,write,dir}).
+-record(ref,{ref,log,read,write,dir,pool}).
 
 %%=================================================================
 %%	SERVICE
@@ -199,13 +206,23 @@ create( Params )->
   ensure_dir( DataDir ),
   ensure_dir( LogDir ),
 
-  #ref{
+  WriteParams = maps:to_list(Write),
+  Ref = #ref{
     ref = try_open(DataDir, Options),
     log = try_open(LogDir, Options),
     read = maps:to_list(Read),
-    write = maps:to_list(Write),
+    write = WriteParams,
     dir = Dir
-  }.
+  },
+  try
+    Pool = open_pool(Ref, Params),
+    Ref#ref{pool = Pool}
+  catch
+    Class:Reason:Stack->
+      catch rocksdb:close(Ref#ref.ref),
+      catch rocksdb:close(Ref#ref.log),
+      erlang:raise(Class, Reason, Stack)
+  end.
 
 open( Params )->
   Options = #{
@@ -233,17 +250,26 @@ open( Params )->
       throw(not_exists)
   end,
 
+  WriteParams = maps:to_list(Write),
   Ref = #ref{
     ref = try_open(DataDir, Options),
     log = try_open(LogDir, Options),
     read = maps:to_list(Read),
-    write = maps:to_list(Write),
+    write = WriteParams,
     dir = Dir
   },
 
   rollback_log( Ref ),
 
-  Ref.
+  try
+    Pool = open_pool(Ref, Params),
+    Ref#ref{pool = Pool}
+  catch
+    Class:Reason:Stack->
+      catch rocksdb:close(Ref#ref.ref),
+      catch rocksdb:close(Ref#ref.log),
+      erlang:raise(Class, Reason, Stack)
+  end.
 
 
 try_open(Dir, #{
@@ -291,7 +317,8 @@ try_open(Dir, #{rocksdb := Params})->
   ?LOGERROR("~s OPEN ERROR: params ~p",[Dir, Params]),
   throw(open_error).
 
-close( #ref{ref = Ref, log = Log} )->
+close( #ref{ref = Ref, log = Log, pool = Pool} )->
+  catch close_pool(Pool),
   case rocksdb:close( Ref ) of
     ok ->
       case rocksdb:close( Log ) of
@@ -334,17 +361,25 @@ read(#ref{ref = Ref, read = Params}=R, [Key|Rest])->
 read(_R,[])->
   [].
 
-write(#ref{ref = Ref, write = Params}, KVs)->
-  case rocksdb:write(Ref,[{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs ], Params) of
+write(#ref{ref = Ref, write = Params, pool = disabled}, KVs)->
+  Ops = [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs],
+  case rocksdb:write(Ref, Ops, Params) of
     ok->ok;
     {error,Error}->throw(Error)
-  end.
+  end;
+write(#ref{pool = Pool}, KVs)->
+  Ops = [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs],
+  zaya_pool:call(Pool, [{batch, Ops}]).
 
-delete(#ref{ref = Ref, write = Params},Keys)->
-  case rocksdb:write(Ref,[{delete,?ENCODE_KEY(K)} || K <- Keys], Params) of
+delete(#ref{ref = Ref, write = Params, pool = disabled}, Keys)->
+  Ops = [{delete,?ENCODE_KEY(K)} || K <- Keys],
+  case rocksdb:write(Ref, Ops, Params) of
     ok -> ok;
     {error, Error}-> throw(Error)
-  end.
+  end;
+delete(#ref{pool = Pool}, Keys)->
+  Ops = [{delete,?ENCODE_KEY(K)} || K <- Keys],
+  zaya_pool:call(Pool, [{batch, Ops}]).
 
 %%=================================================================
 %%	ITERATOR
@@ -652,11 +687,14 @@ dump_batch(#ref{ref = Ref, write = Params}, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
-commit( #ref{ ref = DRef,write = Params}, Write, Delete )->
+commit( #ref{ ref = DRef, write = Params, pool = disabled}, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
-  ok = rocksdb:write( DRef, Commit, Params).
+  ok = rocksdb:write( DRef, Commit, Params);
+commit( #ref{ pool = Pool}, Write, Delete )->
+  Commit = prepare_commit( Write, Delete ),
+  zaya_pool:call(Pool, [{batch, Commit}]).
 
-commit1( #ref{ ref = DRef,log = Log ,write = Params} = Ref, Write, Delete )->
+commit1( #ref{ ref = DRef, log = Log, write = Params, pool = disabled} = Ref, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
   Rollback = prepare_rollback( Commit , Ref ),
   if
@@ -666,6 +704,23 @@ commit1( #ref{ ref = DRef,log = Log ,write = Params} = Ref, Write, Delete )->
       try
         ok = rocksdb:write( Log, [ {put,TRef, ?ENCODE_VALUE(Rollback) }], Params),
         ok = rocksdb:write( DRef, Commit, Params),
+        TRef
+      catch
+        _:E->
+          rollback( Ref, TRef ),
+          throw( E )
+      end
+  end;
+commit1( #ref{ log = Log, write = Params, pool = Pool} = Ref, Write, Delete )->
+  Commit = prepare_commit( Write, Delete ),
+  Rollback = prepare_rollback( Commit , Ref ),
+  if
+    length( Rollback ) =:=0-> ignore;
+    true ->
+      TRef = ?ENCODE_KEY( make_ref() ),
+      try
+        ok = rocksdb:write( Log, [ {put,TRef, ?ENCODE_VALUE(Rollback) }], Params),
+        zaya_pool:call(Pool, [{batch, Commit}]),
         TRef
       catch
         _:E->
@@ -682,10 +737,18 @@ commit2( #ref{log = Log, write = Params} , TRef )->
       ok
   end.
 
-rollback(#ref{ref =Ref, log = Log ,write = Params}, TRef )->
+rollback(#ref{ref = Ref, log = Log, write = Params, pool = disabled}, TRef )->
   case rocksdb:get(Log, TRef, Params) of
     {ok, Rollback} ->
       ok = rocksdb:write( Ref, ?DECODE_VALUE( Rollback ), Params ),
+      ok = rocksdb:write( Log, [{delete,TRef}], Params);
+    _->
+      ok
+  end;
+rollback(#ref{log = Log, write = Params, pool = Pool}, TRef )->
+  case rocksdb:get(Log, TRef, Params) of
+    {ok, Rollback} ->
+      zaya_pool:call(Pool, [{batch, ?DECODE_VALUE( Rollback )}]),
       ok = rocksdb:write( Log, [{delete,TRef}], Params);
     _->
       ok
@@ -725,6 +788,16 @@ rollback_log( #ref{ ref = Ref, log = Log, read = ReadParams, write = WriteParams
   end, ok, ReadParams).
 
 %%=================================================================
+%%	POOL API
+%%=================================================================
+pool_batch({DRef, WriteParams}, Requests)->
+  Ops = lists:append([Batch || {batch, Batch} <- Requests]),
+  case rocksdb:write(DRef, Ops, WriteParams) of
+    ok -> ok;
+    {error, Error} -> throw(Error)
+  end.
+
+%%=================================================================
 %%	INFO
 %%=================================================================
 get_size( Ref )->
@@ -759,6 +832,29 @@ maps_merge( Map1, Map2 )->
     end
   end, Map1, Map2 ).
 
+
+%%=================================================================
+%%	POOL UTILITIES
+%%=================================================================
+open_pool(_Ref, #{pool := disabled})->
+  disabled;
+open_pool(#ref{ref = DRef, write = WriteParams}, Params)->
+  {ok, Pool} = zaya_pool:start_link(pool_params(DRef, WriteParams, Params)),
+  Pool.
+
+close_pool(disabled)->
+  ok;
+close_pool(Pool)->
+  zaya_pool:stop(Pool).
+
+pool_params(DRef, WriteParams, Params)->
+  maps:merge(
+    maps:get(pool, Params, #{}),
+    #{
+      ref => {DRef, WriteParams},
+      module => ?MODULE
+    }
+  ).
 
 ensure_dir( Path )->
   case filelib:is_file( Path ) of
