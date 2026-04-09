@@ -1,0 +1,6 @@
+_build/*
+rebar.lock
+DATA/*
+LOG/*
+test/DATA/*
+test/LOG/*
