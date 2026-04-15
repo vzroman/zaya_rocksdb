@@ -2,8 +2,8 @@
 
 -include_lib("common_test/include/ct.hrl").
 
--define(DEFAULT_PROCESSES, 10000).
--define(DEFAULT_WRITES_PER_PROCESS, 100000).
+-define(DEFAULT_PROCESSES, 100000).
+-define(DEFAULT_WRITES_PER_PROCESS, 1000).
 -define(DEFAULT_ENTRIES_PER_WRITE, 2).
 
 %% CT callbacks
@@ -87,16 +87,13 @@ concurrent_write_throughput(Config) ->
          "Total writes:     ~b~n",
          [Mode, Procs, WritesPerProc, BatchSize, Batches, TotalWrites]),
 
-  Parent = self(),
-  Tag = make_ref(),
-
   T0 = erlang:monotonic_time(millisecond),
 
   Pids = [spawn_monitor(fun() ->
-    worker(Parent, Tag, Ref, ProcId, Batches, BatchSize)
+    worker(Ref, ProcId, Batches, BatchSize)
   end) || ProcId <- lists:seq(1, Procs)],
 
-  Errors = collect(Pids, Tag),
+  Errors = collect(length(Pids)),
 
   Elapsed = erlang:monotonic_time(millisecond) - T0,
   ElapsedSec = Elapsed / 1000,
@@ -121,14 +118,9 @@ concurrent_write_throughput(Config) ->
 %%=================================================================
 %%  INTERNAL
 %%=================================================================
-worker(Parent, Tag, Ref, ProcId, Batches, BatchSize) ->
-  try
-    do_batches(Ref, ProcId, 1, Batches, BatchSize),
-    Parent ! {Tag, self(), ok}
-  catch
-    Class:Reason:Stack ->
-      Parent ! {Tag, self(), {error, {Class, Reason, Stack}}}
-  end.
+worker(Ref, ProcId, Batches, BatchSize) ->
+  do_batches(Ref, ProcId, 1, Batches, BatchSize).
+
 
 do_batches(_Ref, _ProcId, Seq, Batches, _BatchSize) when Seq > Batches ->
   ok;
@@ -141,19 +133,13 @@ gen_batch(ProcId, Seq, BatchSize) ->
   Base = (ProcId bsl 32) bor (Seq * BatchSize),
   [{Base + I, {ProcId, Seq, I, erlang:monotonic_time()}} || I <- lists:seq(1, BatchSize)].
 
-collect(Pids, Tag) ->
-  collect(Pids, Tag, []).
 
-collect([], _Tag, Errors) ->
-  Errors;
-collect([{Pid, MRef} | Rest], Tag, Errors) ->
+collect(Count) when Count > 0->
   receive
-    {Tag, Pid, ok} ->
-      erlang:demonitor(MRef, [flush]),
-      collect(Rest, Tag, Errors);
-    {Tag, Pid, {error, _} = Err} ->
-      erlang:demonitor(MRef, [flush]),
-      collect(Rest, Tag, [Err | Errors]);
-    {'DOWN', MRef, process, Pid, Reason} ->
-      collect(Rest, Tag, [{error, {down, Reason}} | Errors])
-  end.
+    {'DOWN', _Ref, process, _Pid, normal} ->
+      collect(Count - 1);
+    {'DOWN', _Ref, process, _Pid, Reason} ->
+      [{error, {down, Reason}} | collect(Count-1)]
+  end;
+collect(_Count)->
+  [].
