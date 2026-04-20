@@ -30,7 +30,8 @@
   fold_and_copy_test/1,
   dump_batch_test/1,
   transaction_api_test/1,
-  reopen_recovers_pending_commit1_test/1,
+  prepare_rollback_roundtrip_test/1,
+  is_persistent_test/1,
   concurrent_write_callers_test/1
 ]).
 
@@ -57,7 +58,8 @@ mode_tests()->
     fold_and_copy_test,
     dump_batch_test,
     transaction_api_test,
-    reopen_recovers_pending_commit1_test,
+    prepare_rollback_roundtrip_test,
+    is_persistent_test,
     concurrent_write_callers_test
   ].
 
@@ -332,67 +334,26 @@ transaction_api_test(Config)->
       ),
       ?assertEqual([], zaya_rocksdb:read(Ref, [drop])),
 
-      %% commit1 ignore (no actual changes)
-      Ignore = zaya_rocksdb:commit1(Ref, [{keep, 10}], [missing]),
-      ?assertEqual(ignore, Ignore),
-      ok = zaya_rocksdb:commit2(Ref, Ignore),
-
-      %% commit1 + rollback
-      Token1 = zaya_rocksdb:commit1(Ref, [{keep, 20}, {new, 21}], [add]),
-      ?assert(is_binary(Token1)),
-      ?assertEqual(
-        #{keep => 20, new => 21, stay => 3},
-        read_map(Ref, [keep, new, stay])
-      ),
-      ok = zaya_rocksdb:rollback(Ref, Token1),
-      ?assertEqual(
-        #{keep => 10, add => 11, stay => 3},
-        read_map(Ref, [keep, add, stay])
-      ),
-      ?assertEqual([], zaya_rocksdb:read(Ref, [new])),
-
-      %% commit1 + commit2
-      Token2 = zaya_rocksdb:commit1(Ref, [{keep, 30}, {fresh, 31}], [add]),
-      ?assert(is_binary(Token2)),
-      ok = zaya_rocksdb:commit2(Ref, Token2),
-      ?assertEqual(
-        #{keep => 30, fresh => 31, stay => 3},
-        read_map(Ref, [keep, fresh, stay])
-      ),
-      ?assertEqual([], zaya_rocksdb:read(Ref, [add])),
-
       %% empty commit
       ok = zaya_rocksdb:commit(Ref, [], [])
     end
   ).
 
-reopen_recovers_pending_commit1_test(Config)->
-  Params = backend_params(Config),
-  catch zaya_rocksdb:remove(Params),
+prepare_rollback_roundtrip_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_rocksdb:write(Ref, [{item, original}]),
+      {RollbackWrite, RollbackDelete} =
+        zaya_rocksdb:prepare_rollback(Ref, [{item, updated}], []),
+      ok = zaya_rocksdb:commit(Ref, [{item, updated}], []),
+      ok = zaya_rocksdb:commit(Ref, RollbackWrite, RollbackDelete),
+      ?assertEqual([{item, original}], zaya_rocksdb:read(Ref, [item]))
+    end
+  ).
 
-  Ref1 = zaya_rocksdb:create(Params),
-  try
-    ok = zaya_rocksdb:write(Ref1, [{keep, 1}, {drop, 2}]),
-    Token = zaya_rocksdb:commit1(Ref1, [{keep, 10}, {fresh, 11}], [drop]),
-    ?assert(is_binary(Token)),
-    ?assertEqual(
-      #{keep => 10, fresh => 11},
-      read_map(Ref1, [keep, fresh])
-    )
-  after
-    ok = zaya_rocksdb:close(Ref1)
-  end,
-
-  Ref2 = zaya_rocksdb:open(Params),
-  try
-    ?assertEqual(
-      #{keep => 1, drop => 2},
-      read_map(Ref2, [keep, drop])
-    ),
-    ?assertEqual([], zaya_rocksdb:read(Ref2, [fresh]))
-  after
-    ok = zaya_rocksdb:close(Ref2)
-  end.
+is_persistent_test(_Config)->
+  ?assertEqual(true, zaya_rocksdb:is_persistent()).
 
 concurrent_write_callers_test(Config)->
   with_ref(
@@ -448,7 +409,7 @@ assert_mode_ref(Config, Ref)->
   end.
 
 ref_pool(Ref)->
-  element(7, Ref).
+  element(tuple_size(Ref), Ref).
 
 sample_records()->
   [{1, one}, {3, three}, {5, five}, {7, seven}].
