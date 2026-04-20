@@ -1,5 +1,6 @@
 _build/*
 rebar.lock
+.worktrees/*
 DATA/*
 LOG/*
 test/DATA/*
