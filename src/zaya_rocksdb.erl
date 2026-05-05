@@ -10,7 +10,7 @@
   %compression_algorithm => todo,
   open_options=>#{
     % total_threads => 64,
-    create_if_missing => false,
+    % create_if_missing => false,
     %create_missing_column_families => todo,
     %error_if_exists => false,
     paranoid_checks => false,
@@ -98,6 +98,7 @@
 
 -define(DEFAULT_OPTIONS,#{
     dir => ".",
+    pool => #{},
     open_attempts => ?DEFAULT_OPEN_ATTEMPTS ,
     rocksdb => ?DEFAULT_ROCKSDB_OPTIONS
 }).
@@ -185,7 +186,13 @@
   get_size/1
 ]).
 
--record(ref,{ref,read,write,dir,pool}).
+-record(ref,{
+  ref,
+  read,
+  write,
+  dir,
+  pool
+}).
 
 %%=================================================================
 %%	SERVICE
@@ -197,26 +204,32 @@ create( Params )->
       read := Read,
       write := Write
     }
-  } = ?OPTIONS( maps_merge(Params, #{rocksdb => #{open_options => #{ create_if_missing => true }}}) ),
+  } = ?OPTIONS(maps_merge(
+      Params,
+      #{
+        rocksdb => #{
+          open_options => #{
+            create_if_missing => true
+          }
+        }
+      }
+    )),
 
-  DataDir = Dir ++"/DATA",
-
-  ensure_dir( DataDir ),
-
-  WriteParams = maps:to_list(Write),
-  Ref = #ref{
-    ref = try_open(DataDir, Options),
+  ensure_dir( Dir ),
+  InitRef = #ref{
     read = maps:to_list(Read),
-    write = WriteParams,
+    write = maps:to_list(Write),
     dir = Dir
   },
-  try
-    Pool = open_pool(Ref, Params),
-    Ref#ref{pool = Pool}
-  catch
-    Class:Reason:Stack->
-      catch rocksdb:close(Ref#ref.ref),
-      erlang:raise(Class, Reason, Stack)
+  case pipe(InitRef, [
+    fun(Ref)-> Ref#ref{ref = try_open(Ref, Options)} end,
+    fun(Ref)-> Ref#ref{pool = open_pool(Ref, Options)} end
+  ]) of
+    {ok, Ref}-> Ref;
+    {error, Error, Ref}->
+      catch close(Ref),
+      catch remove(Params),
+      throw(Error)
   end.
 
 open( Params )->
@@ -226,37 +239,42 @@ open( Params )->
       read := Read,
       write := Write
     }
-  } = ?OPTIONS( Params ),
+  } = ?OPTIONS(maps_merge(
+    Params,
+    #{
+      rocksdb => #{
+        open_options => #{
+          create_if_missing => false
+        }
+      }
+    }
+  )),
 
-  DataDir = Dir ++"/DATA",
-
-  case filelib:is_dir( DataDir ) of
+  case filelib:is_dir( Dir ) of
     true->
       ok;
     false->
-      ?LOGERROR("~s doesn't exist",[ DataDir ]),
+      ?LOGERROR("~s doesn't exist",[ Dir ]),
       throw(not_exists)
   end,
 
-  WriteParams = maps:to_list(Write),
-  Ref = #ref{
-    ref = try_open(DataDir, Options),
+  InitRef = #ref{
     read = maps:to_list(Read),
-    write = WriteParams,
+    write = maps:to_list(Write),
     dir = Dir
   },
-
-  try
-    Pool = open_pool(Ref, Params),
-    Ref#ref{pool = Pool}
-  catch
-    Class:Reason:Stack->
-      catch rocksdb:close(Ref#ref.ref),
-      erlang:raise(Class, Reason, Stack)
+  case pipe(InitRef, [
+    fun(Ref)-> Ref#ref{ref = try_open(Ref, Options)} end,
+    fun(Ref)-> Ref#ref{pool = open_pool(Ref, Options)} end
+  ]) of
+    {ok, Ref}-> Ref;
+    {error, Error, Ref}->
+      catch close(Ref),
+      throw(Error)
   end.
 
 
-try_open(Dir, #{
+try_open(#ref{dir = Dir}=Ref, #{
   rocksdb := #{
     open_options := Params
   },
@@ -265,7 +283,7 @@ try_open(Dir, #{
 
   ?LOGINFO("~s try open with params ~p",[Dir, Params]),
   case rocksdb:open(Dir, maps:to_list(Params)) of
-    {ok, Ref} -> Ref;
+    {ok, DBRef} -> DBRef;
     %% Check for open errors
     {error, {db_open, Error}} ->
       % Check for hanging lock
@@ -277,7 +295,7 @@ try_open(Dir, #{
               ?LOGINFO("~s lock removed, trying open",[ Dir ]),
               timer:sleep( ?RETRY_TIMEOUT ),
               % Dont decrement the attempt because we fixed the error ourselves
-              try_open(Dir,Options);
+              try_open(Ref,Options);
             {error,UnlockError}->
               ?LOGERROR("~s lock remove error ~p, try to remove it manually",[?LOCK(Dir),UnlockError]),
               throw(locked)
@@ -290,25 +308,21 @@ try_open(Dir, #{
               ?LOGWARNING("~s repair attempt failed error ~p stack ~p, left attemps ~p",[Dir,E,S,Attempts-1])
           end,
           timer:sleep( ?RETRY_TIMEOUT ),
-          try_open(Dir,Options#{ open_attempts => Attempts -1 })
+          try_open(Ref,Options#{ open_attempts => Attempts -1 })
       end;
     {error, Other} ->
       ?LOGERROR("~s open error ~p, left attemps ~p",[Dir,Other,Attempts-1]),
       timer:sleep( ?RETRY_TIMEOUT ),
-      try_open( Dir, Options#{ open_attempts => Attempts -1 } )
+      try_open(Ref, Options#{ open_attempts => Attempts -1 } )
   end;
-try_open(Dir, #{rocksdb := Params})->
+try_open(#ref{dir = Dir}, #{rocksdb := Params})->
   ?LOGERROR("~s OPEN ERROR: params ~p",[Dir, Params]),
   throw(open_error).
 
 close( #ref{ref = Ref, pool = Pool} )->
   catch close_pool(Pool),
-  case rocksdb:close( Ref ) of
-    ok ->
-      ok;
-    {error,Error}->
-      throw( Error)
-  end.
+  catch rocksdb:close( Ref ),
+  ok.
 
 remove( Params )->
   Options = #{
@@ -675,8 +689,20 @@ commit( #ref{ pool = Pool}, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
   zaya_pool:call(Pool, [{batch, Commit}]).
 
-prepare_rollback(Ref, Write, Delete)->
-  rollback_from_commit(Write, Delete, Ref, [], []).
+prepare_rollback(#ref{ref = Ref, read = Params}, Write, Delete)->
+  Keys = lists:usort([K || {K,_V} <- Write] ++ Delete),
+  lists:foldl(
+    fun(K, {WAcc,DAcc})->
+      case rocksdb:get(Ref, ?ENCODE_KEY(K), Params) of
+        {ok, V} ->
+          {[{K,?DECODE_VALUE(V)}|WAcc], DAcc};
+        _->
+          {WAcc,[K|DAcc]}
+      end
+    end,
+    {[],[]},
+    Keys
+  ).
 
 is_persistent()->
   true.
@@ -687,27 +713,6 @@ prepare_commit([], [K|Rest] )->
   [{delete,?ENCODE_KEY(K)} | prepare_commit([], Rest) ];
 prepare_commit([], [])->
   [].
-
-rollback_from_commit([{Key, _Value} | Rest], Delete, Ref, WritesAcc, DeletesAcc)->
-  {NextWritesAcc, NextDeletesAcc} =
-    case read(Ref, [Key]) of
-      [{Key, Existing}] ->
-        {[{Key, Existing} | WritesAcc], DeletesAcc};
-      [] ->
-        {WritesAcc, [Key | DeletesAcc]}
-    end,
-  rollback_from_commit(Rest, Delete, Ref, NextWritesAcc, NextDeletesAcc);
-rollback_from_commit([], [Key | Rest], Ref, WritesAcc, DeletesAcc)->
-  NextWritesAcc =
-    case read(Ref, [Key]) of
-      [{Key, Existing}] ->
-        [{Key, Existing} | WritesAcc];
-      [] ->
-        WritesAcc
-    end,
-  rollback_from_commit([], Rest, Ref, NextWritesAcc, DeletesAcc);
-rollback_from_commit([], [], _Ref, WritesAcc, DeletesAcc)->
-  {lists:reverse(WritesAcc), lists:reverse(DeletesAcc)}.
 
 %%=================================================================
 %%	POOL API
@@ -756,8 +761,17 @@ maps_merge( Map1, Map2 )->
 
 
 %%=================================================================
-%%	POOL UTILITIES
+%%	UTILITIES
 %%=================================================================
+pipe(Ref, [Step | Rest])->
+  try Step(Ref) of
+    Ref1 -> pipe(Ref1, Rest)
+  catch _:Error ->
+    {error, Error, Ref}
+  end;
+pipe(Ref, [])->
+  {ok, Ref}.
+
 open_pool(_Ref, #{pool := disabled})->
   disabled;
 open_pool(#ref{ref = DRef, write = WriteParams}, Params)->
