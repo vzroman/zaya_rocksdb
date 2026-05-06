@@ -689,20 +689,43 @@ commit( #ref{ pool = Pool}, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
   zaya_pool:call(Pool, [{batch, Commit}]).
 
-prepare_rollback(#ref{ref = Ref, read = Params}, Write, Delete)->
-  Keys = lists:usort([K || {K,_V} <- Write] ++ Delete),
-  lists:foldl(
-    fun(K, {WAcc,DAcc})->
-      case rocksdb:get(Ref, ?ENCODE_KEY(K), Params) of
-        {ok, V} ->
-          {[{K,?DECODE_VALUE(V)}|WAcc], DAcc};
-        _->
-          {WAcc,[K|DAcc]}
-      end
+prepare_rollback(Ref, Write, Delete)->
+  {W_acc0, D_acc} = rollback_write(Write, Ref, {[],[]}),
+  W_acc = rollback_delete(Delete, Ref, W_acc0),
+  {W_acc, D_acc}.
+
+rollback_write(
+    [{K,V}|Rest],
+    Ref = #ref{ref = DBRef, read = Params},
+    Acc0 = {W_acc,D_acc}
+)->
+  Acc =
+    case rocksdb:get(DBRef, ?ENCODE_KEY(K), Params) of
+      {ok, V_enc}->
+        case ?DECODE_VALUE(V_enc) of
+          V -> Acc0;
+          V0-> {[{K,V0}|W_acc], D_acc}
+        end;
+      _->
+        {W_acc, [K|D_acc]}
     end,
-    {[],[]},
-    Keys
-  ).
+  rollback_write(Rest, Ref, Acc);
+rollback_write([], _Ref, Acc)->
+  Acc.
+
+rollback_delete(
+    [K|Rest],
+    Ref = #ref{ref = DBRef, read = Params},
+    Acc0
+)->
+  Acc =
+    case rocksdb:get(DBRef, ?ENCODE_KEY(K), Params) of
+      {ok, V} -> [{K, ?DECODE_VALUE(V)}|Acc0];
+      _-> Acc0
+    end,
+  rollback_delete(Rest, Ref, Acc);
+rollback_delete([], _Ref, Acc)->
+  Acc.
 
 is_persistent()->
   true.
