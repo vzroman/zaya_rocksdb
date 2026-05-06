@@ -358,24 +358,30 @@ read(_R,[])->
   [].
 
 write(#ref{ref = Ref, write = Params, pool = disabled}, KVs)->
-  Ops = [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs],
+  Ops = prepare_write(KVs),
   case rocksdb:write(Ref, Ops, Params) of
     ok->ok;
     {error,Error}->throw(Error)
   end;
 write(#ref{pool = Pool}, KVs)->
-  Ops = [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs],
+  Ops = prepare_write(KVs),
   zaya_pool:call(Pool, [{batch, Ops}]).
 
+prepare_write(KVs)->
+  [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs].
+
 delete(#ref{ref = Ref, write = Params, pool = disabled}, Keys)->
-  Ops = [{delete,?ENCODE_KEY(K)} || K <- Keys],
+  Ops = prepare_delete(Keys),
   case rocksdb:write(Ref, Ops, Params) of
     ok -> ok;
     {error, Error}-> throw(Error)
   end;
 delete(#ref{pool = Pool}, Keys)->
-  Ops = [{delete,?ENCODE_KEY(K)} || K <- Keys],
+  Ops = prepare_delete(Keys),
   zaya_pool:call(Pool, [{batch, Ops}]).
+
+prepare_delete(Keys)->
+  [{delete,?ENCODE_KEY(K)} || K <- Keys].
 
 %%=================================================================
 %%	ITERATOR
@@ -683,9 +689,9 @@ dump_batch(#ref{ref = Ref, write = Params}, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
-commit( #ref{ ref = DRef, write = Params, pool = disabled}, Write, Delete )->
+commit( #ref{ ref = Ref, write = Params, pool = disabled}, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
-  ok = rocksdb:write( DRef, Commit, Params);
+  ok = rocksdb:write( Ref, Commit, Params);
 commit( #ref{ pool = Pool}, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
   zaya_pool:call(Pool, [{batch, Commit}]).
