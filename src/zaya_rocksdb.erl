@@ -690,6 +690,13 @@ commit( #ref{ pool = Pool}, Write, Delete )->
   Commit = prepare_commit( Write, Delete ),
   zaya_pool:call(Pool, [{batch, Commit}]).
 
+prepare_commit([{K,V}|Rest], Delete )->
+  [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} | prepare_commit(Rest, Delete) ];
+prepare_commit([], [K|Rest] )->
+  [{delete,?ENCODE_KEY(K)} | prepare_commit([], Rest) ];
+prepare_commit([], [])->
+  [].
+
 prepare_rollback(Ref, Write, Delete)->
   {W_acc0, D_acc} = rollback_write(Write, Ref, {[],[]}),
   W_acc = rollback_delete(Delete, Ref, W_acc0),
@@ -730,13 +737,6 @@ rollback_delete([], _Ref, Acc)->
 
 is_persistent()->
   true.
-
-prepare_commit([{K,V}|Rest], Delete )->
-  [{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} | prepare_commit(Rest, Delete) ];
-prepare_commit([], [K|Rest] )->
-  [{delete,?ENCODE_KEY(K)} | prepare_commit([], Rest) ];
-prepare_commit([], [])->
-  [].
 
 %%=================================================================
 %%	POOL API
