@@ -222,8 +222,8 @@ create( Params )->
     dir = Dir
   },
   case pipe(InitRef, [
-    fun(Ref)-> Ref#ref{ref = try_open(Ref, Options)} end,
-    fun(Ref)-> Ref#ref{pool = open_pool(Ref, Options)} end
+    fun(Ref)-> try_open(Ref, Options) end,
+    fun(Ref)-> open_pool(Ref, Options) end
   ]) of
     {ok, Ref}-> Ref;
     {error, Error, Ref}->
@@ -264,8 +264,8 @@ open( Params )->
     dir = Dir
   },
   case pipe(InitRef, [
-    fun(Ref)-> Ref#ref{ref = try_open(Ref, Options)} end,
-    fun(Ref)-> Ref#ref{pool = open_pool(Ref, Options)} end
+    fun(Ref)-> try_open(Ref, Options) end,
+    fun(Ref)-> open_pool(Ref, Options) end
   ]) of
     {ok, Ref}-> Ref;
     {error, Error, Ref}->
@@ -283,7 +283,8 @@ try_open(#ref{dir = Dir}=Ref, #{
 
   ?LOGINFO("~s try open with params ~p",[Dir, Params]),
   case rocksdb:open(Dir, maps:to_list(Params)) of
-    {ok, DBRef} -> DBRef;
+    {ok, DBRef} ->
+      Ref#ref{ref = DBRef};
     %% Check for open errors
     {error, {db_open, Error}} ->
       % Check for hanging lock
@@ -795,11 +796,11 @@ pipe(Ref, [Step | Rest])->
 pipe(Ref, [])->
   {ok, Ref}.
 
-open_pool(_Ref, #{pool := disabled})->
-  disabled;
-open_pool(#ref{ref = DRef, write = WriteParams}, Params)->
+open_pool(Ref, #{pool := disabled})->
+  Ref#ref{pool = disabled};
+open_pool(Ref = #ref{ref = DRef, write = WriteParams}, Params)->
   {ok, Pool} = zaya_pool:start_link(pool_params(DRef, WriteParams, Params)),
-  Pool.
+  Ref#ref{pool = Pool}.
 
 close_pool(disabled)->
   ok;
