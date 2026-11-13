@@ -671,9 +671,9 @@ copy(#ref{ref = Ref, read = Params}, Fun, InAcc)->
   after
     catch rocksdb:iterator_close(Itr)
   end.
-do_copy( Next, Itr, Fun, InAcc, Reset ) when Reset =:= 0->
-  rocksdb:iterator_refresh(Itr),
-  do_copy( Next, Itr, Fun, InAcc, ?ITR_RESET_COUNT );
+do_copy( {ok,K,_V}, Itr, Fun, InAcc, Reset ) when Reset =:= 0->
+  ok = rocksdb:iterator_refresh(Itr),
+  do_copy( rocksdb:iterator_move(Itr,K), Itr, Fun, InAcc, ?ITR_RESET_COUNT );
 do_copy( {ok,K,V}, Itr, Fun, InAcc, Reset )->
   Acc = Fun( {K, V}, InAcc ),
   do_copy( rocksdb:iterator_move(Itr,next), Itr, Fun, Acc, Reset -1 );
