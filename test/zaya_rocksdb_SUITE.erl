@@ -28,6 +28,7 @@
   iterator_navigation_test/1,
   find_query_variants_test/1,
   fold_and_copy_test/1,
+  copy_after_refresh_test/1,
   dump_batch_test/1,
   transaction_api_test/1,
   prepare_rollback_roundtrip_test/1,
@@ -56,6 +57,7 @@ mode_tests()->
     iterator_navigation_test,
     find_query_variants_test,
     fold_and_copy_test,
+    copy_after_refresh_test,
     dump_batch_test,
     transaction_api_test,
     prepare_rollback_roundtrip_test,
@@ -301,6 +303,23 @@ fold_and_copy_test(Config)->
         [{7, seven}, {5, five}, {3, three}, {1, one}],
         CopyResult
       )
+    end
+  ).
+
+copy_after_refresh_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      %% Cross two iterator refresh boundaries (currently every 10,000 records).
+      Records = [{Key, {value, Key}} || Key <- lists:seq(1, 20005)],
+      ok = zaya_rocksdb:write(Ref, Records),
+      CopyResult = zaya_rocksdb:copy(
+        Ref,
+        fun({K, V}, Acc)-> [{sext:decode(K), binary_to_term(V)} | Acc] end,
+        []
+      ),
+      ?assertEqual(length(Records), length(CopyResult)),
+      ?assertEqual(Records, lists:reverse(CopyResult))
     end
   ).
 
